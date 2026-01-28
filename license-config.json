@@ -1,0 +1,16 @@
+{
+  "plugin_slug": "process-subscriptions",
+  "plugin_name": "Pro-cess Subscriptions",
+  "description": "Internal utility plugin for WooCommerce subscription management and license system sync",
+  "license_types": [
+    {
+      "name": "Internal Use",
+      "slug": "internal",
+      "max_activations": 999,
+      "duration_days": null,
+      "price": 0,
+      "sort_order": 1,
+      "features": ["stripe_integration", "subscription_management", "license_sync", "webhook_handling"]
+    }
+  ]
+}

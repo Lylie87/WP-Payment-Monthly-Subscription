@@ -1,0 +1,142 @@
+/**
+ * Pro-cess Subscriptions Admin Styles
+ */
+
+.process-subscriptions-admin .subsubsub {
+    margin-bottom: 15px;
+}
+
+.process-subscriptions-admin .wp-list-table .column-id {
+    width: 120px;
+}
+
+.process-subscriptions-admin .wp-list-table .column-order {
+    width: 80px;
+}
+
+.process-subscriptions-admin .wp-list-table .column-status {
+    width: 120px;
+}
+
+.process-subscriptions-admin .wp-list-table .column-amount {
+    width: 100px;
+}
+
+.process-subscriptions-admin .wp-list-table .column-next-payment,
+.process-subscriptions-admin .wp-list-table .column-created {
+    width: 130px;
+}
+
+/* Status badges */
+.subscription-status {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.subscription-status.status-active {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.subscription-status.status-pending {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.subscription-status.status-pending-cancel {
+    background-color: #ffe5d0;
+    color: #9a3412;
+}
+
+.subscription-status.status-past_due,
+.subscription-status.status-past-due {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.subscription-status.status-cancelled,
+.subscription-status.status-canceled {
+    background-color: #e2e3e5;
+    color: #383d41;
+}
+
+.subscription-status.status-expired {
+    background-color: #d6d8db;
+    color: #1b1e21;
+}
+
+/* Settings page */
+.form-table th {
+    padding-left: 0;
+}
+
+.notice.inline {
+    margin: 15px 0;
+}
+
+/* Product data panel */
+#process_subscription_data h4 {
+    margin: 10px 0;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+}
+
+/* My Account subscriptions table */
+.woocommerce-account .subscription-status {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.woocommerce-account .status-active {
+    background: #d4edda;
+    color: #155724;
+}
+
+.woocommerce-account .status-pending-cancel {
+    background: #ffe5d0;
+    color: #9a3412;
+}
+
+.woocommerce-account .status-cancelled {
+    background: #e2e3e5;
+    color: #383d41;
+}
+
+.woocommerce-account .status-expired {
+    background: #d6d8db;
+    color: #1b1e21;
+}
+
+.woocommerce-account .cancel-subscription {
+    font-size: 12px;
+    padding: 4px 10px;
+}
+
+/* Frontend subscription info */
+.process-subscription-info {
+    margin: 10px 0;
+    padding: 10px 15px;
+    background: #f8f9fa;
+    border-left: 3px solid #e94560;
+    border-radius: 0 4px 4px 0;
+}
+
+.process-subscription-info .subscription-trial {
+    color: #28a745;
+    margin: 0 0 5px;
+}
+
+.process-subscription-info .subscription-terms {
+    color: #666;
+    font-size: 14px;
+    margin: 0;
+}

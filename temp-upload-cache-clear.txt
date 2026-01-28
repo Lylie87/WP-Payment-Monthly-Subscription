@@ -1,0 +1,5 @@
+option batch continue
+option confirm off
+open sftp://processco@pro-cess.co.uk -privatekey="F:\Stablepoint.ppk" -passphrase="Lylie87!@@"
+put "F:\Github Repo's\WP Woocommerce Subscription Payments\temp-clear-cache.php" /home/processco/public_html/clear-opcache.php
+exit

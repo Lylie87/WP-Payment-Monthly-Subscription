@@ -1,0 +1,5 @@
+option batch continue
+option confirm off
+open sftp://processco@pro-cess.co.uk -privatekey="F:\Stablepoint.ppk" -passphrase="Lylie87!@@"
+synchronize remote "F:\Github Repo's\WP Woocommerce Subscription Payments\dist\process-subscriptions" "/home/processco/public_html/wp-content/plugins/process-subscriptions"
+exit
