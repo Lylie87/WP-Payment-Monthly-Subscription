@@ -589,10 +589,22 @@ class Process_Subscription_Product {
         ) );
 
         if ( $existing ) {
+            $account_url = wc_get_account_endpoint_url( 'subscriptions' );
             wc_add_notice(
-                __( 'You already have an active subscription for this product. Please manage it from your account.', 'process-subscriptions' ),
+                sprintf(
+                    __( 'You already have an active subscription for this product. <a href="%s">Manage your subscriptions</a>.', 'process-subscriptions' ),
+                    esc_url( $account_url )
+                ),
                 'error'
             );
+
+            // For URL-based add-to-cart (e.g. /?add-to-cart=123), redirect to cart page
+            // where the notice will actually display, instead of silently landing on homepage
+            if ( isset( $_GET['add-to-cart'] ) ) {
+                wp_safe_redirect( wc_get_cart_url() );
+                exit;
+            }
+
             return false;
         }
 

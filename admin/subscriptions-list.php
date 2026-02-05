@@ -11,6 +11,42 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 $manager = Process_Subscription_Manager::get_instance();
 
+// Handle actions
+if ( isset( $_GET['action'], $_GET['sub_id'], $_GET['_wpnonce'] ) ) {
+    $action = sanitize_text_field( $_GET['action'] );
+    $sub_id = intval( $_GET['sub_id'] );
+
+    if ( wp_verify_nonce( $_GET['_wpnonce'], 'process_sub_action_' . $sub_id ) ) {
+        switch ( $action ) {
+            case 'cancel':
+                $manager->cancel( $sub_id, true );
+                $notice = 'Subscription #' . $sub_id . ' cancelled.';
+                break;
+
+            case 'delete':
+                global $wpdb;
+                $table = $wpdb->prefix . 'process_subscriptions';
+                $wpdb->delete( $table, array( 'id' => $sub_id ), array( '%d' ) );
+                $notice = 'Subscription #' . $sub_id . ' deleted.';
+                break;
+
+            case 'activate':
+                $manager->update( $sub_id, array( 'status' => 'active' ) );
+                $notice = 'Subscription #' . $sub_id . ' set to active.';
+                break;
+        }
+
+        // Redirect to clean URL
+        wp_safe_redirect( add_query_arg( array( 'page' => 'process-subscriptions', 'notice' => urlencode( $notice ) ), admin_url( 'admin.php' ) ) );
+        exit;
+    }
+}
+
+// Show notice
+if ( ! empty( $_GET['notice'] ) ) {
+    echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( sanitize_text_field( $_GET['notice'] ) ) . '</p></div>';
+}
+
 // Get filter values
 $status_filter = isset( $_GET['status'] ) ? sanitize_text_field( $_GET['status'] ) : '';
 $page = isset( $_GET['paged'] ) ? max( 1, intval( $_GET['paged'] ) ) : 1;
@@ -31,6 +67,7 @@ $total_pages = ceil( $total / $per_page );
 $counts = array(
     'all'            => $manager->get_count(),
     'active'         => $manager->get_count( 'active' ),
+    'trialing'       => $manager->get_count( 'trialing' ),
     'pending-cancel' => $manager->get_count( 'pending-cancel' ),
     'cancelled'      => $manager->get_count( 'cancelled' ),
     'expired'        => $manager->get_count( 'expired' ),
@@ -55,6 +92,12 @@ $counts = array(
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=process-subscriptions&status=active' ) ); ?>" <?php echo $status_filter === 'active' ? 'class="current"' : ''; ?>>
                 <?php esc_html_e( 'Active', 'process-subscriptions' ); ?>
                 <span class="count">(<?php echo esc_html( $counts['active'] ); ?>)</span>
+            </a> |
+        </li>
+        <li>
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=process-subscriptions&status=trialing' ) ); ?>" <?php echo $status_filter === 'trialing' ? 'class="current"' : ''; ?>>
+                <?php esc_html_e( 'Trialing', 'process-subscriptions' ); ?>
+                <span class="count">(<?php echo esc_html( $counts['trialing'] ); ?>)</span>
             </a> |
         </li>
         <li>
@@ -94,12 +137,13 @@ $counts = array(
                 <th class="column-amount"><?php esc_html_e( 'Amount', 'process-subscriptions' ); ?></th>
                 <th class="column-next-payment"><?php esc_html_e( 'Next Payment', 'process-subscriptions' ); ?></th>
                 <th class="column-created"><?php esc_html_e( 'Created', 'process-subscriptions' ); ?></th>
+                <th class="column-actions"><?php esc_html_e( 'Actions', 'process-subscriptions' ); ?></th>
             </tr>
         </thead>
         <tbody>
             <?php if ( empty( $subscriptions ) ) : ?>
                 <tr>
-                    <td colspan="8"><?php esc_html_e( 'No subscriptions found.', 'process-subscriptions' ); ?></td>
+                    <td colspan="9"><?php esc_html_e( 'No subscriptions found.', 'process-subscriptions' ); ?></td>
                 </tr>
             <?php else : ?>
                 <?php foreach ( $subscriptions as $sub ) : ?>
@@ -110,12 +154,16 @@ $counts = array(
                     $period_label = $sub['billing_interval'] > 1
                         ? $sub['billing_interval'] . ' ' . $sub['billing_period'] . 's'
                         : $sub['billing_period'];
+                    $nonce = wp_create_nonce( 'process_sub_action_' . $sub['id'] );
                     ?>
                     <tr>
                         <td class="column-id">
                             <strong>#<?php echo esc_html( $sub['id'] ); ?></strong>
                             <?php if ( ! empty( $sub['stripe_subscription_id'] ) ) : ?>
                                 <br><small>Stripe: <?php echo esc_html( substr( $sub['stripe_subscription_id'], 0, 20 ) ); ?>...</small>
+                            <?php endif; ?>
+                            <?php if ( ! empty( $sub['license_key'] ) ) : ?>
+                                <br><small>Key: <?php echo esc_html( $sub['license_key'] ); ?></small>
                             <?php endif; ?>
                         </td>
                         <td class="column-order">
@@ -153,13 +201,16 @@ $counts = array(
                             <span class="subscription-status status-<?php echo esc_attr( $sub['status'] ); ?>">
                                 <?php echo esc_html( ucfirst( str_replace( array( '-', '_' ), ' ', $sub['status'] ) ) ); ?>
                             </span>
+                            <?php if ( $sub['status'] === 'trialing' && ! empty( $sub['trial_end'] ) ) : ?>
+                                <br><small>Ends: <?php echo esc_html( date_i18n( get_option( 'date_format' ), strtotime( $sub['trial_end'] ) ) ); ?></small>
+                            <?php endif; ?>
                         </td>
                         <td class="column-amount">
                             <?php echo wp_kses_post( wc_price( $sub['amount'], array( 'currency' => $sub['currency'] ) ) ); ?>
                             <br><small><?php esc_html_e( 'per', 'process-subscriptions' ); ?> <?php echo esc_html( $period_label ); ?></small>
                         </td>
                         <td class="column-next-payment">
-                            <?php if ( $sub['next_payment'] && in_array( $sub['status'], array( 'active', 'pending' ), true ) ) : ?>
+                            <?php if ( $sub['next_payment'] && in_array( $sub['status'], array( 'active', 'pending', 'trialing' ), true ) ) : ?>
                                 <?php echo esc_html( date_i18n( get_option( 'date_format' ), strtotime( $sub['next_payment'] ) ) ); ?>
                             <?php elseif ( $sub['expires_at'] ) : ?>
                                 <span style="color: #999;"><?php esc_html_e( 'Expires:', 'process-subscriptions' ); ?> <?php echo esc_html( date_i18n( get_option( 'date_format' ), strtotime( $sub['expires_at'] ) ) ); ?></span>
@@ -169,6 +220,21 @@ $counts = array(
                         </td>
                         <td class="column-created">
                             <?php echo esc_html( date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), strtotime( $sub['created_at'] ) ) ); ?>
+                        </td>
+                        <td class="column-actions">
+                            <?php if ( in_array( $sub['status'], array( 'active', 'trialing', 'pending', 'past_due' ), true ) ) : ?>
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=cancel&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                                   class="button button-small"
+                                   onclick="return confirm('Cancel subscription #<?php echo esc_attr( $sub['id'] ); ?>? This will cancel in Stripe too.');">
+                                    Cancel
+                                </a>
+                            <?php endif; ?>
+                            <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=delete&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                               class="button button-small button-link-delete"
+                               onclick="return confirm('Permanently delete subscription #<?php echo esc_attr( $sub['id'] ); ?>? This cannot be undone.');"
+                               style="color: #a00;">
+                                Delete
+                            </a>
                         </td>
                     </tr>
                 <?php endforeach; ?>
