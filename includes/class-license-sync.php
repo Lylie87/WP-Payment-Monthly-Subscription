@@ -254,33 +254,71 @@ class Process_License_Sync {
     private function setup_trial_addon( $license_key, $license_type, $subscription_id, $trial_days ) {
         $api_key = $this->get_api_key();
         if ( empty( $api_key ) ) {
+            $this->add_sub_order_note( $subscription_id, 'Trial addon setup skipped: API key not configured.' );
             return;
         }
 
         // Only set up route optimisation addon for RO products
         if ( strpos( $license_type, 'ro-' ) !== 0 ) {
+            $this->add_sub_order_note( $subscription_id, sprintf( 'Trial addon setup skipped: license type "%s" is not a route optimisation product.', $license_type ) );
             return;
         }
 
-        $response = wp_remote_post( $this->get_api_url() . 'addon-subscription.php', array(
+        $api_url = $this->get_api_url() . 'addon-subscription.php';
+        $payload = array(
+            'action'              => 'setup_trial',
+            'license_key'         => $license_key,
+            'addon_type'          => 'route_optimization',
+            'woo_subscription_id' => $subscription_id,
+            'trial_days'          => $trial_days,
+        );
+
+        $response = wp_remote_post( $api_url, array(
             'timeout' => 30,
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'X-API-Key'    => $api_key,
             ),
-            'body'    => wp_json_encode( array(
-                'action'              => 'setup_trial',
-                'license_key'         => $license_key,
-                'addon_type'          => 'route_optimization',
-                'woo_subscription_id' => $subscription_id,
-                'trial_days'          => $trial_days,
-            ) ),
+            'body'    => wp_json_encode( $payload ),
         ) );
 
-        if ( ! is_wp_error( $response ) ) {
-            $body = json_decode( wp_remote_retrieve_body( $response ), true );
-            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
-                error_log( 'Process Subscriptions: Trial addon setup result: ' . wp_json_encode( $body ) );
+        if ( is_wp_error( $response ) ) {
+            $this->add_sub_order_note( $subscription_id, 'Trial addon setup FAILED (HTTP error): ' . $response->get_error_message() );
+            return;
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+
+        if ( ! empty( $body['success'] ) ) {
+            $this->add_sub_order_note( $subscription_id, sprintf(
+                'Trial addon created: 5 route optimisations for %d days (license: %s)',
+                $trial_days,
+                $license_key
+            ) );
+        } else {
+            $error = $body['error'] ?? 'Unknown error';
+            $this->add_sub_order_note( $subscription_id, sprintf(
+                'Trial addon setup FAILED (API): %s (HTTP %d, URL: %s)',
+                $error,
+                $status_code,
+                $api_url
+            ) );
+        }
+    }
+
+    /**
+     * Helper: add order note for a subscription
+     *
+     * @param int    $subscription_id Subscription ID.
+     * @param string $note Note text.
+     */
+    private function add_sub_order_note( $subscription_id, $note ) {
+        $subscription = Process_Subscription_Manager::get_instance()->get( $subscription_id );
+        if ( $subscription ) {
+            $order = wc_get_order( $subscription['order_id'] );
+            if ( $order ) {
+                $order->add_order_note( $note );
             }
         }
     }
@@ -296,25 +334,26 @@ class Process_License_Sync {
     public function activate_paid_addon( $subscription_id, $invoice ) {
         $subscription = Process_Subscription_Manager::get_instance()->get( $subscription_id );
         if ( ! $subscription ) {
+            error_log( "Process Subscriptions: activate_paid_addon - subscription #{$subscription_id} not found" );
             return;
         }
 
         $license_key = $subscription['license_key'] ?? '';
+        $order = wc_get_order( $subscription['order_id'] );
 
-        if ( empty( $license_key ) ) {
-            $order = wc_get_order( $subscription['order_id'] );
-            if ( $order ) {
-                $license_key = $order->get_meta( '_subscription_license_key_' . $subscription_id );
-            }
+        if ( empty( $license_key ) && $order ) {
+            $license_key = $order->get_meta( '_subscription_license_key_' . $subscription_id );
         }
 
         if ( empty( $license_key ) ) {
+            if ( $order ) {
+                $order->add_order_note( "Trial conversion FAILED: no license key found for subscription #{$subscription_id}" );
+            }
             return;
         }
 
-        // Get the license type from the order item to determine the correct tier
-        $order = wc_get_order( $subscription['order_id'] );
         if ( ! $order ) {
+            error_log( "Process Subscriptions: activate_paid_addon - order #{$subscription['order_id']} not found" );
             return;
         }
 
@@ -328,17 +367,26 @@ class Process_License_Sync {
 
         // Only handle RO products
         if ( strpos( $license_type, 'ro-' ) !== 0 ) {
+            $order->add_order_note( sprintf( 'Trial conversion: skipping addon activation (license type "%s" is not RO).', $license_type ) );
             return;
         }
 
         $tier    = $this->get_addon_tier( $license_type );
         $api_key = $this->get_api_key();
         if ( empty( $api_key ) ) {
+            $order->add_order_note( 'Trial conversion FAILED: API key not configured.' );
             return;
         }
 
+        $order->add_order_note( sprintf(
+            'Trial conversion: activating %s tier for license %s...',
+            $tier,
+            $license_key
+        ) );
+
         // Activate the paid addon with the correct tier
-        $response = wp_remote_post( $this->get_api_url() . 'addon-subscription.php', array(
+        $api_url = $this->get_api_url() . 'addon-subscription.php';
+        $response = wp_remote_post( $api_url, array(
             'timeout' => 30,
             'headers' => array(
                 'Content-Type' => 'application/json',
@@ -353,15 +401,27 @@ class Process_License_Sync {
             ) ),
         ) );
 
-        if ( ! is_wp_error( $response ) ) {
-            $body = json_decode( wp_remote_retrieve_body( $response ), true );
-            if ( $order && ! empty( $body['success'] ) ) {
-                $order->add_order_note( sprintf(
-                    'Trial converted to paid: %s tier activated for license %s',
-                    $tier,
-                    $license_key
-                ) );
-            }
+        if ( is_wp_error( $response ) ) {
+            $order->add_order_note( 'Trial conversion FAILED (HTTP error): ' . $response->get_error_message() );
+            return;
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+
+        if ( ! empty( $body['success'] ) ) {
+            $order->add_order_note( sprintf(
+                'Trial converted to paid: %s tier activated for license %s',
+                $tier,
+                $license_key
+            ) );
+        } else {
+            $error = $body['error'] ?? 'Unknown error';
+            $order->add_order_note( sprintf(
+                'Trial conversion FAILED (API): %s (HTTP %d)',
+                $error,
+                $status_code
+            ) );
         }
 
         // Extend the license expiry by 30 days (first paid month)

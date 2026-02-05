@@ -82,6 +82,8 @@ class Process_Webhook_Handler {
         // Handle event
         $handled = $this->process_event( $event );
 
+        $this->log( "Event {$event['type']} processing complete: handled=" . ( $handled ? 'true' : 'false' ) );
+
         return new WP_REST_Response( array( 'received' => true, 'handled' => $handled ), 200 );
     }
 
@@ -164,32 +166,60 @@ class Process_Webhook_Handler {
      * @return bool
      */
     private function handle_payment_succeeded( $invoice, $manager ) {
-        if ( empty( $invoice['subscription'] ) ) {
+        $stripe_sub_id = $invoice['subscription'] ?? '';
+        $amount_paid   = isset( $invoice['amount_paid'] ) ? ( $invoice['amount_paid'] / 100 ) : 0;
+
+        $this->log( "Payment succeeded: Stripe sub={$stripe_sub_id}, amount={$amount_paid}" );
+
+        if ( empty( $stripe_sub_id ) ) {
+            $this->log( 'Payment succeeded SKIPPED: no subscription ID in invoice' );
             return false;
         }
 
-        $subscription = $manager->get_by_stripe_id( $invoice['subscription'] );
+        $subscription = $manager->get_by_stripe_id( $stripe_sub_id );
         if ( ! $subscription ) {
+            $this->log( "Payment succeeded FAILED: no local subscription found for Stripe ID {$stripe_sub_id}" );
             return false;
         }
+
+        $this->log( "Payment succeeded: found local sub #{$subscription['id']}, status={$subscription['status']}, trial_end={$subscription['trial_end']}" );
 
         // Check if this is a trial-to-paid conversion (first real payment)
         $was_trialing = ( $subscription['status'] === 'trialing' || ! empty( $subscription['trial_end'] ) );
 
+        $this->log( "Payment succeeded: was_trialing={$was_trialing}" );
+
         // Renew the subscription
-        $manager->renew( $subscription['id'] );
+        $renew_result = $manager->renew( $subscription['id'] );
+        $this->log( "Payment succeeded: renew() result=" . ( $renew_result ? 'true' : 'false' ) );
 
         // Trigger license renewal
         do_action( 'process_subscription_payment_received', $subscription['id'], $invoice );
 
         // If converting from trial, fire the conversion action
         if ( $was_trialing ) {
+            $this->log( "Payment succeeded: firing process_subscription_trial_converted for sub #{$subscription['id']}" );
             do_action( 'process_subscription_trial_converted', $subscription['id'], $invoice );
+        }
+
+        // Add order note
+        $order = wc_get_order( $subscription['order_id'] );
+        if ( $order ) {
+            $note = sprintf(
+                'Webhook: payment of %s received for subscription #%d.',
+                wc_price( $amount_paid ),
+                $subscription['id']
+            );
+            if ( $was_trialing ) {
+                $note .= ' Trial conversion triggered.';
+            }
+            $order->add_order_note( $note );
         }
 
         // Send receipt email
         $this->send_payment_receipt( $subscription, $invoice );
 
+        $this->log( "Payment succeeded: processing complete for sub #{$subscription['id']}" );
         return true;
     }
 
@@ -201,12 +231,17 @@ class Process_Webhook_Handler {
      * @return bool
      */
     private function handle_payment_failed( $invoice, $manager ) {
-        if ( empty( $invoice['subscription'] ) ) {
+        $stripe_sub_id = $invoice['subscription'] ?? '';
+        $this->log( "Payment failed: Stripe sub={$stripe_sub_id}" );
+
+        if ( empty( $stripe_sub_id ) ) {
+            $this->log( 'Payment failed SKIPPED: no subscription ID in invoice' );
             return false;
         }
 
-        $subscription = $manager->get_by_stripe_id( $invoice['subscription'] );
+        $subscription = $manager->get_by_stripe_id( $stripe_sub_id );
         if ( ! $subscription ) {
+            $this->log( "Payment failed FAILED: no local subscription found for Stripe ID {$stripe_sub_id}" );
             return false;
         }
 
@@ -232,10 +267,15 @@ class Process_Webhook_Handler {
      * @return bool
      */
     private function handle_subscription_updated( $stripe_sub, $manager ) {
+        $this->log( "Subscription updated: Stripe sub={$stripe_sub['id']}, Stripe status={$stripe_sub['status']}" );
+
         $subscription = $manager->get_by_stripe_id( $stripe_sub['id'] );
         if ( ! $subscription ) {
+            $this->log( "Subscription updated FAILED: no local subscription found for Stripe ID {$stripe_sub['id']}" );
             return false;
         }
+
+        $this->log( "Subscription updated: found local sub #{$subscription['id']}, current status={$subscription['status']}" );
 
         $update_data = array();
 
@@ -282,8 +322,11 @@ class Process_Webhook_Handler {
      * @return bool
      */
     private function handle_subscription_deleted( $stripe_sub, $manager ) {
+        $this->log( "Subscription deleted: Stripe sub={$stripe_sub['id']}" );
+
         $subscription = $manager->get_by_stripe_id( $stripe_sub['id'] );
         if ( ! $subscription ) {
+            $this->log( "Subscription deleted FAILED: no local subscription found for Stripe ID {$stripe_sub['id']}" );
             return false;
         }
 
@@ -319,14 +362,23 @@ class Process_Webhook_Handler {
     }
 
     /**
-     * Log webhook
+     * Log webhook event
      *
      * @param array $event Event data.
      */
     private function log_webhook( $event ) {
-        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
-            error_log( 'Process Subscriptions Webhook: ' . $event['type'] . ' - ' . $event['id'] );
-        }
+        $this->log( 'Webhook received: ' . $event['type'] . ' - ' . $event['id'] );
+    }
+
+    /**
+     * Write to subscription debug log
+     *
+     * @param string $message Log message.
+     */
+    private function log( $message ) {
+        $log_file = WP_CONTENT_DIR . '/process-subs-webhook.log';
+        $timestamp = current_time( 'Y-m-d H:i:s' );
+        file_put_contents( $log_file, "[{$timestamp}] {$message}\n", FILE_APPEND | LOCK_EX );
     }
 
     /**

@@ -17,6 +17,7 @@ if ( isset( $_GET['action'], $_GET['sub_id'], $_GET['_wpnonce'] ) ) {
     $sub_id = intval( $_GET['sub_id'] );
 
     if ( wp_verify_nonce( $_GET['_wpnonce'], 'process_sub_action_' . $sub_id ) ) {
+        $notice = '';
         switch ( $action ) {
             case 'cancel':
                 $manager->cancel( $sub_id, true );
@@ -33,6 +34,74 @@ if ( isset( $_GET['action'], $_GET['sub_id'], $_GET['_wpnonce'] ) ) {
             case 'activate':
                 $manager->update( $sub_id, array( 'status' => 'active' ) );
                 $notice = 'Subscription #' . $sub_id . ' set to active.';
+                break;
+
+            case 'setup_trial_addon':
+                // Manually trigger trial addon creation
+                $sub = $manager->get( $sub_id );
+                if ( ! $sub ) {
+                    $notice = 'Subscription #' . $sub_id . ' not found.';
+                    break;
+                }
+                $order = wc_get_order( $sub['order_id'] );
+                if ( ! $order ) {
+                    $notice = 'Order #' . $sub['order_id'] . ' not found.';
+                    break;
+                }
+
+                $license_key  = $sub['license_key'] ?? '';
+                $license_type = '';
+                $trial_days   = 14;
+
+                if ( empty( $license_key ) ) {
+                    $license_key = $order->get_meta( '_subscription_license_key_' . $sub_id );
+                }
+
+                foreach ( $order->get_items() as $item ) {
+                    if ( $item->get_meta( '_is_subscription' ) === 'yes' ) {
+                        $license_type = $item->get_meta( '_subscription_license_type' );
+                        $td = $item->get_meta( '_subscription_trial_days' );
+                        if ( $td ) {
+                            $trial_days = intval( $td );
+                        }
+                        break;
+                    }
+                }
+
+                if ( ! empty( $license_key ) && ! empty( $license_type ) ) {
+                    $sync = Process_License_Sync::get_instance();
+                    $method = new ReflectionMethod( $sync, 'setup_trial_addon' );
+                    $method->setAccessible( true );
+                    $method->invoke( $sync, $license_key, $license_type, $sub_id, $trial_days );
+                    $notice = 'Trial addon setup triggered for subscription #' . $sub_id . ' (key: ' . $license_key . ', type: ' . $license_type . '). Check order notes.';
+                } else {
+                    $notice = 'Cannot set up addon: license_key=' . $license_key . ', license_type=' . $license_type;
+                }
+                break;
+
+            case 'convert_trial':
+                // Manually trigger trial-to-paid conversion
+                $sub = $manager->get( $sub_id );
+                if ( $sub ) {
+                    do_action( 'process_subscription_trial_converted', $sub_id, array( 'manual_trigger' => true ) );
+                    $notice = 'Trial conversion triggered for subscription #' . $sub_id . '. Check order notes.';
+                } else {
+                    $notice = 'Subscription #' . $sub_id . ' not found.';
+                }
+                break;
+
+            case 'extend_license':
+                // Manually extend license by 30 days
+                $sub = $manager->get( $sub_id );
+                if ( $sub ) {
+                    $sync = Process_License_Sync::get_instance();
+                    $method = new ReflectionMethod( $sync, 'extend_license_expiry' );
+                    $method->setAccessible( true );
+                    $method->invoke( $sync, $sub, 30 );
+                    $notice = 'License extension triggered for subscription #' . $sub_id . ' (+30 days). Check order notes.';
+                } else {
+                    $notice = 'Subscription #' . $sub_id . ' not found.';
+                }
                 break;
         }
 
@@ -229,6 +298,28 @@ $counts = array(
                                     Cancel
                                 </a>
                             <?php endif; ?>
+
+                            <?php if ( ! empty( $sub['license_key'] ) ) : ?>
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=setup_trial_addon&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                                   class="button button-small"
+                                   onclick="return confirm('Trigger trial addon setup for #<?php echo esc_attr( $sub['id'] ); ?>?');"
+                                   title="Manually trigger trial addon creation">
+                                    Setup Addon
+                                </a>
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=convert_trial&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                                   class="button button-small"
+                                   onclick="return confirm('Trigger trial conversion for #<?php echo esc_attr( $sub['id'] ); ?>? This will activate the paid addon and extend license.');"
+                                   title="Manually trigger trial-to-paid conversion">
+                                    Convert
+                                </a>
+                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=extend_license&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                                   class="button button-small"
+                                   onclick="return confirm('Extend license for #<?php echo esc_attr( $sub['id'] ); ?> by 30 days?');"
+                                   title="Extend license expiry by 30 days">
+                                    +30 Days
+                                </a>
+                            <?php endif; ?>
+
                             <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=delete&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
                                class="button button-small button-link-delete"
                                onclick="return confirm('Permanently delete subscription #<?php echo esc_attr( $sub['id'] ); ?>? This cannot be undone.');"
