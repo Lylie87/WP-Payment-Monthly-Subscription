@@ -108,7 +108,7 @@ $has_plugin_keys = ! empty( $settings['stripe_secret_key'] );
                         <code><?php echo esc_url( PROCESS_LICENSE_API_URL ); ?></code>
                         <p class="description"><?php esc_html_e( 'Defined in wp-config.php', 'process-subscriptions' ); ?></p>
                     <?php else : ?>
-                        <input type="url" name="license_api_url" id="license_api_url" class="regular-text" value="<?php echo esc_attr( $settings['license_api_url'] ?? '' ); ?>" placeholder="https://license.pro-cess.co.uk/api/create-license.php">
+                        <input type="url" name="license_api_url" id="license_api_url" class="regular-text" value="<?php echo esc_attr( $settings['license_api_url'] ?? '' ); ?>" placeholder="https://pro-cess.co.uk/license-system/api/create-license.php">
                         <p class="description"><?php esc_html_e( 'URL to your license system API.', 'process-subscriptions' ); ?></p>
                     <?php endif; ?>
                 </td>

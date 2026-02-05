@@ -364,7 +364,7 @@ class Process_Order_License_Admin {
             $product_name = $product ? $product->get_name() : 'Product #' . $subscription['product_id'];
             $license_status = $license_key ? $this->get_license_status( $license_key ) : 'none';
             $sub_status = $subscription['status'] ?? 'unknown';
-            $is_active = in_array( $sub_status, array( 'active', 'pending' ), true );
+            $is_active = in_array( $sub_status, array( 'active', 'pending', 'trialing' ), true );
             $amount = floatval( $subscription['amount'] ?? 0 );
             $currency = $subscription['currency'] ?? 'GBP';
 
