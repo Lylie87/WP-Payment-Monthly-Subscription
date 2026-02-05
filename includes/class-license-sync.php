@@ -520,7 +520,54 @@ class Process_License_Sync {
             return;
         }
 
+        // Cancel any active addons before suspending
+        $this->cancel_subscription_addons( $subscription );
+
         $this->update_license_status( $subscription, 'suspended' );
+    }
+
+    /**
+     * Cancel addons for a suspended/cancelled subscription
+     *
+     * @param array $subscription Subscription data.
+     */
+    private function cancel_subscription_addons( $subscription ) {
+        $license_key = $subscription['license_key'] ?? '';
+
+        if ( empty( $license_key ) ) {
+            $order = wc_get_order( $subscription['order_id'] );
+            if ( $order ) {
+                $license_key = $order->get_meta( '_subscription_license_key_' . $subscription['id'] );
+            }
+        }
+
+        if ( empty( $license_key ) ) {
+            return;
+        }
+
+        $api_key = $this->get_api_key();
+        if ( empty( $api_key ) ) {
+            return;
+        }
+
+        // Cancel all addon types
+        $addon_types = array( 'route_optimization', 'gpt4o' );
+        $api_url = $this->get_api_url() . 'addon-subscription.php';
+
+        foreach ( $addon_types as $addon_type ) {
+            wp_remote_post( $api_url, array(
+                'timeout' => 30,
+                'headers' => array(
+                    'Content-Type' => 'application/json',
+                    'X-API-Key'    => $api_key,
+                ),
+                'body'    => wp_json_encode( array(
+                    'action'      => 'cancel',
+                    'license_key' => $license_key,
+                    'addon_type'  => $addon_type,
+                ) ),
+            ) );
+        }
     }
 
     /**

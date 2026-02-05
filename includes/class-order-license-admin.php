@@ -843,6 +843,10 @@ class Process_Order_License_Admin {
             return false;
         }
 
+        // 1. Cancel any active addons first (Route Optimisation, GPT-4o, etc.)
+        $this->cancel_license_addons( $license_key, $api_key, $api_url );
+
+        // 2. Revoke the main license
         $response = wp_remote_post( $api_url . 'update-license.php', array(
             'timeout' => 30,
             'headers' => array(
@@ -862,6 +866,33 @@ class Process_Order_License_Admin {
 
         $body = json_decode( wp_remote_retrieve_body( $response ), true );
         return ! empty( $body['success'] );
+    }
+
+    /**
+     * Cancel all active addons for a license
+     *
+     * @param string $license_key License key.
+     * @param string $api_key API key.
+     * @param string $api_url Base API URL.
+     */
+    private function cancel_license_addons( $license_key, $api_key, $api_url ) {
+        $addon_types = array( 'route_optimization', 'gpt4o' );
+
+        foreach ( $addon_types as $addon_type ) {
+            wp_remote_post( $api_url . 'addon-subscription.php', array(
+                'timeout' => 30,
+                'headers' => array(
+                    'Content-Type' => 'application/json',
+                    'X-API-Key'    => $api_key,
+                ),
+                'body'    => wp_json_encode( array(
+                    'action'      => 'cancel',
+                    'license_key' => $license_key,
+                    'addon_type'  => $addon_type,
+                ) ),
+            ) );
+            // Continue even if cancellation fails - we still want to revoke the license
+        }
     }
 
     /**
