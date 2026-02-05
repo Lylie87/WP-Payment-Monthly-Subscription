@@ -639,6 +639,12 @@ if ( ! class_exists( 'WC_Product_Process_Subscription' ) ) {
          * @return string
          */
         public function get_price( $context = 'view' ) {
+            // If price was explicitly set (e.g., zeroed for trial via set_price(0)), respect that
+            $changes = $this->get_changes();
+            if ( isset( $changes['price'] ) ) {
+                return parent::get_price( $context );
+            }
+
             $price = get_post_meta( $this->get_id(), '_subscription_price', true );
             return $price !== '' ? $price : parent::get_price( $context );
         }
@@ -650,6 +656,12 @@ if ( ! class_exists( 'WC_Product_Process_Subscription' ) ) {
          * @return string
          */
         public function get_regular_price( $context = 'view' ) {
+            // If price was explicitly set (e.g., zeroed for trial), respect that
+            $changes = $this->get_changes();
+            if ( isset( $changes['price'] ) ) {
+                return parent::get_regular_price( $context );
+            }
+
             $price = get_post_meta( $this->get_id(), '_subscription_price', true );
             return $price !== '' ? $price : parent::get_regular_price( $context );
         }
