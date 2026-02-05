@@ -431,8 +431,9 @@ class Process_License_Sync {
             ) );
         }
 
-        // Extend the license expiry by 30 days (first paid month)
-        $this->extend_license_expiry( $subscription, 30 );
+        // Note: license expiry extension is handled by renew_license() via the
+        // process_subscription_renewed action (fired by renew() in the webhook handler).
+        // Do NOT extend here as well, or we'd get +60 days instead of +30.
     }
 
     /**

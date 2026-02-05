@@ -207,6 +207,21 @@ class Process_Webhook_Handler {
 
         $this->log( "Payment succeeded: found local sub #{$subscription['id']}, status={$subscription['status']}, trial_end={$subscription['trial_end']}" );
 
+        // Skip £0 invoices (e.g. trial setup) - these are not real payments
+        if ( $amount_paid <= 0 ) {
+            $this->log( "Payment succeeded SKIPPED: amount is £0 (trial setup invoice) for sub #{$subscription['id']}" );
+
+            $order = wc_get_order( $subscription['order_id'] );
+            if ( $order ) {
+                $order->add_order_note( sprintf(
+                    'Webhook: £0 invoice received for subscription #%d (trial setup) - no action taken.',
+                    $subscription['id']
+                ) );
+            }
+
+            return true; // Return true so Stripe considers it handled
+        }
+
         // Check if this is a trial-to-paid conversion (first real payment)
         $was_trialing = ( $subscription['status'] === 'trialing' || ! empty( $subscription['trial_end'] ) );
 
