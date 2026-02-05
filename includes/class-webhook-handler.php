@@ -169,6 +169,29 @@ class Process_Webhook_Handler {
         $stripe_sub_id = $invoice['subscription'] ?? '';
         $amount_paid   = isset( $invoice['amount_paid'] ) ? ( $invoice['amount_paid'] / 100 ) : 0;
 
+        // Debug: log all subscription-related fields from the invoice
+        $debug_fields = array();
+        foreach ( array( 'subscription', 'subscription_details', 'parent', 'id', 'billing_reason', 'status' ) as $key ) {
+            if ( isset( $invoice[ $key ] ) ) {
+                $val = $invoice[ $key ];
+                $debug_fields[] = $key . '=' . ( is_array( $val ) ? wp_json_encode( $val ) : $val );
+            }
+        }
+        // Also check lines for subscription ID
+        if ( ! empty( $invoice['lines']['data'][0]['subscription'] ) ) {
+            $debug_fields[] = 'lines[0].subscription=' . $invoice['lines']['data'][0]['subscription'];
+            // Use it as fallback
+            if ( empty( $stripe_sub_id ) ) {
+                $stripe_sub_id = $invoice['lines']['data'][0]['subscription'];
+            }
+        }
+        // Also check parent for subscription ID (newer Stripe API versions)
+        if ( empty( $stripe_sub_id ) && ! empty( $invoice['parent']['subscription_details']['subscription'] ) ) {
+            $stripe_sub_id = $invoice['parent']['subscription_details']['subscription'];
+            $debug_fields[] = 'parent.subscription_details.subscription=' . $stripe_sub_id;
+        }
+        $this->log( "Payment succeeded: invoice fields: " . implode( ', ', $debug_fields ) );
+
         $this->log( "Payment succeeded: Stripe sub={$stripe_sub_id}, amount={$amount_paid}" );
 
         if ( empty( $stripe_sub_id ) ) {
