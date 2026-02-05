@@ -149,6 +149,13 @@ class Process_License_Sync {
             $order->update_meta_data( '_subscription_license_key_' . $subscription_id, $body['license']['serial_key'] );
             $order->save();
 
+            // If this is a Route Optimiser product and the plugin is installed, auto-store the license
+            if ( $plugin_slug === 'wp-route-optimiser' && defined( 'WP_ROUTE_OPTIMISER_VERSION' ) ) {
+                update_option( 'wp_route_optimiser_license_key', $body['license']['serial_key'] );
+                delete_transient( 'wp_route_optimiser_license_data' ); // Clear cache
+                $order->add_order_note( 'Route Optimiser license automatically activated: ' . $body['license']['serial_key'] );
+            }
+
             $order->add_order_note( sprintf(
                 'License created for subscription #%d: %s%s',
                 $subscription_id,
