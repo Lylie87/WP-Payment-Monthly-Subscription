@@ -64,6 +64,10 @@ class Process_Subscription_Product {
         add_filter( 'woocommerce_cart_item_subtotal', array( $this, 'cart_item_subtotal' ), 10, 3 );
         add_action( 'woocommerce_before_calculate_totals', array( $this, 'set_trial_cart_price' ), 20 );
 
+        // Force payment form for £0 trial orders (so Stripe can save the card via SetupIntent)
+        add_filter( 'woocommerce_cart_needs_payment', array( $this, 'trial_needs_payment' ), 10, 2 );
+        add_filter( 'woocommerce_order_needs_payment', array( $this, 'trial_order_needs_payment' ), 10, 3 );
+
         // Checkout handling
         add_action( 'woocommerce_checkout_create_order_line_item', array( $this, 'add_order_item_meta' ), 10, 4 );
 
@@ -559,6 +563,60 @@ class Process_Subscription_Product {
                 $cart_item['data']->set_price( 0 );
             }
         }
+    }
+
+    /**
+     * Force payment form to show for £0 trial orders
+     *
+     * Without this, WooCommerce sees £0 total and skips payment entirely.
+     * We need the Stripe Gateway to render so it creates a SetupIntent
+     * and saves the customer's card for charging after the trial ends.
+     *
+     * @param bool    $needs_payment Whether the cart needs payment.
+     * @param WC_Cart $cart Cart object.
+     * @return bool
+     */
+    public function trial_needs_payment( $needs_payment, $cart ) {
+        foreach ( $cart->get_cart() as $cart_item ) {
+            $product = $cart_item['data'];
+            if ( $product->get_type() !== 'process_subscription' ) {
+                continue;
+            }
+
+            $trial_days = get_post_meta( $product->get_id(), '_subscription_trial_days', true );
+            if ( $trial_days && intval( $trial_days ) > 0 ) {
+                return true;
+            }
+        }
+
+        return $needs_payment;
+    }
+
+    /**
+     * Force order payment processing for £0 trial orders
+     *
+     * Even with the cart showing the payment form, WooCommerce checks
+     * $order->needs_payment() before calling the gateway's process_payment().
+     * For £0 orders this returns false, skipping the Stripe SetupIntent.
+     *
+     * @param bool     $needs_payment Whether the order needs payment.
+     * @param WC_Order $order Order object.
+     * @param array    $valid_order_statuses Valid statuses.
+     * @return bool
+     */
+    public function trial_order_needs_payment( $needs_payment, $order, $valid_order_statuses ) {
+        foreach ( $order->get_items() as $item ) {
+            if ( $item->get_meta( '_is_subscription' ) !== 'yes' ) {
+                continue;
+            }
+
+            $trial_days = $item->get_meta( '_subscription_trial_days' );
+            if ( $trial_days && intval( $trial_days ) > 0 ) {
+                return true;
+            }
+        }
+
+        return $needs_payment;
     }
 
     /**
