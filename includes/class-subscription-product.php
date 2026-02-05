@@ -62,9 +62,13 @@ class Process_Subscription_Product {
         // Cart handling
         add_filter( 'woocommerce_cart_item_price', array( $this, 'cart_item_price' ), 10, 3 );
         add_filter( 'woocommerce_cart_item_subtotal', array( $this, 'cart_item_subtotal' ), 10, 3 );
+        add_action( 'woocommerce_before_calculate_totals', array( $this, 'set_trial_cart_price' ), 20 );
 
         // Checkout handling
         add_action( 'woocommerce_checkout_create_order_line_item', array( $this, 'add_order_item_meta' ), 10, 4 );
+
+        // Prevent duplicate subscriptions
+        add_filter( 'woocommerce_add_to_cart_validation', array( $this, 'prevent_duplicate_subscription' ), 10, 2 );
     }
 
     /**
@@ -407,10 +411,18 @@ class Process_Subscription_Product {
             return $price_html;
         }
 
-        $price    = get_post_meta( $product->get_id(), '_subscription_price', true );
-        $period   = get_post_meta( $product->get_id(), '_subscription_period', true ) ?: 'month';
-        $interval = get_post_meta( $product->get_id(), '_subscription_interval', true ) ?: 1;
-        $signup   = get_post_meta( $product->get_id(), '_subscription_signup_fee', true );
+        $price      = get_post_meta( $product->get_id(), '_subscription_price', true );
+        $period     = get_post_meta( $product->get_id(), '_subscription_period', true ) ?: 'month';
+        $interval   = get_post_meta( $product->get_id(), '_subscription_interval', true ) ?: 1;
+        $signup     = get_post_meta( $product->get_id(), '_subscription_signup_fee', true );
+        $trial_days = get_post_meta( $product->get_id(), '_subscription_trial_days', true );
+
+        // Trial pricing display
+        if ( $trial_days && intval( $trial_days ) > 0 ) {
+            $price_html = '<strong>' . wc_price( 0 ) . ' for ' . intval( $trial_days ) . ' days</strong>';
+            $price_html .= '<br><small>Then ' . wc_price( $price ) . ' / ' . $this->get_period_string( $period, $interval ) . '</small>';
+            return $price_html;
+        }
 
         $price_html = wc_price( $price ) . ' / ' . $this->get_period_string( $period, $interval );
 
@@ -439,9 +451,14 @@ class Process_Subscription_Product {
             return $price;
         }
 
-        $sub_price = get_post_meta( $product->get_id(), '_subscription_price', true );
-        $period    = get_post_meta( $product->get_id(), '_subscription_period', true ) ?: 'month';
-        $interval  = get_post_meta( $product->get_id(), '_subscription_interval', true ) ?: 1;
+        $sub_price  = get_post_meta( $product->get_id(), '_subscription_price', true );
+        $period     = get_post_meta( $product->get_id(), '_subscription_period', true ) ?: 'month';
+        $interval   = get_post_meta( $product->get_id(), '_subscription_interval', true ) ?: 1;
+        $trial_days = get_post_meta( $product->get_id(), '_subscription_trial_days', true );
+
+        if ( $trial_days && intval( $trial_days ) > 0 ) {
+            return wc_price( 0 ) . '<br><small>Then ' . wc_price( $sub_price ) . ' / ' . $this->get_period_string( $period, $interval ) . '</small>';
+        }
 
         return wc_price( $sub_price ) . ' / ' . $this->get_period_string( $period, $interval );
     }
@@ -461,10 +478,18 @@ class Process_Subscription_Product {
             return $subtotal;
         }
 
-        $sub_price = get_post_meta( $product->get_id(), '_subscription_price', true );
-        $period    = get_post_meta( $product->get_id(), '_subscription_period', true ) ?: 'month';
-        $interval  = get_post_meta( $product->get_id(), '_subscription_interval', true ) ?: 1;
-        $signup    = get_post_meta( $product->get_id(), '_subscription_signup_fee', true );
+        $sub_price  = get_post_meta( $product->get_id(), '_subscription_price', true );
+        $period     = get_post_meta( $product->get_id(), '_subscription_period', true ) ?: 'month';
+        $interval   = get_post_meta( $product->get_id(), '_subscription_interval', true ) ?: 1;
+        $signup     = get_post_meta( $product->get_id(), '_subscription_signup_fee', true );
+        $trial_days = get_post_meta( $product->get_id(), '_subscription_trial_days', true );
+
+        // Trial: show £0 subtotal with future pricing info
+        if ( $trial_days && intval( $trial_days ) > 0 ) {
+            $subtotal = wc_price( 0 );
+            $subtotal .= '<br><small>' . intval( $trial_days ) . '-day free trial, then ' . wc_price( $sub_price ) . ' / ' . $this->get_period_string( $period, $interval ) . '</small>';
+            return $subtotal;
+        }
 
         $total = floatval( $sub_price ) * $cart_item['quantity'];
 
@@ -499,6 +524,11 @@ class Process_Subscription_Product {
         $item->add_meta_data( '_subscription_interval', get_post_meta( $product->get_id(), '_subscription_interval', true ) );
         $item->add_meta_data( '_subscription_plugin_slug', get_post_meta( $product->get_id(), '_subscription_plugin_slug', true ) );
         $item->add_meta_data( '_subscription_license_type', get_post_meta( $product->get_id(), '_subscription_license_type', true ) );
+
+        $trial_days = get_post_meta( $product->get_id(), '_subscription_trial_days', true );
+        if ( $trial_days && intval( $trial_days ) > 0 ) {
+            $item->add_meta_data( '_subscription_trial_days', intval( $trial_days ) );
+        }
     }
 
     /**
@@ -508,6 +538,67 @@ class Process_Subscription_Product {
      * @param int    $interval Interval.
      * @return string
      */
+    /**
+     * Set cart price to zero for trial subscription products
+     *
+     * @param WC_Cart $cart Cart object.
+     */
+    public function set_trial_cart_price( $cart ) {
+        if ( is_admin() && ! defined( 'DOING_AJAX' ) ) {
+            return;
+        }
+
+        foreach ( $cart->get_cart() as $cart_item ) {
+            $product = $cart_item['data'];
+            if ( $product->get_type() !== 'process_subscription' ) {
+                continue;
+            }
+
+            $trial_days = get_post_meta( $product->get_id(), '_subscription_trial_days', true );
+            if ( $trial_days && intval( $trial_days ) > 0 ) {
+                $cart_item['data']->set_price( 0 );
+            }
+        }
+    }
+
+    /**
+     * Prevent duplicate subscriptions for the same product
+     *
+     * @param bool $valid Whether the add to cart is valid.
+     * @param int  $product_id Product ID being added.
+     * @return bool
+     */
+    public function prevent_duplicate_subscription( $valid, $product_id ) {
+        $product = wc_get_product( $product_id );
+        if ( ! $product || $product->get_type() !== 'process_subscription' ) {
+            return $valid;
+        }
+
+        if ( ! is_user_logged_in() ) {
+            return $valid;
+        }
+
+        global $wpdb;
+        $table   = $wpdb->prefix . 'process_subscriptions';
+        $user_id = get_current_user_id();
+
+        $existing = $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM {$table} WHERE user_id = %d AND product_id = %d AND status IN ('active', 'trialing', 'pending-cancel') LIMIT 1",
+            $user_id,
+            $product_id
+        ) );
+
+        if ( $existing ) {
+            wc_add_notice(
+                __( 'You already have an active subscription for this product. Please manage it from your account.', 'process-subscriptions' ),
+                'error'
+            );
+            return false;
+        }
+
+        return $valid;
+    }
+
     private function get_period_string( $period, $interval = 1 ) {
         $interval = intval( $interval );
 
@@ -615,6 +706,10 @@ if ( ! class_exists( 'WC_Product_Process_Subscription' ) ) {
          * @return string
          */
         public function single_add_to_cart_text() {
+            $trial_days = get_post_meta( $this->get_id(), '_subscription_trial_days', true );
+            if ( $trial_days && intval( $trial_days ) > 0 ) {
+                return __( 'Start Free Trial', 'process-subscriptions' );
+            }
             return __( 'Subscribe Now', 'process-subscriptions' );
         }
 
@@ -624,6 +719,10 @@ if ( ! class_exists( 'WC_Product_Process_Subscription' ) ) {
          * @return string
          */
         public function add_to_cart_text() {
+            $trial_days = get_post_meta( $this->get_id(), '_subscription_trial_days', true );
+            if ( $trial_days && intval( $trial_days ) > 0 ) {
+                return __( 'Start Free Trial', 'process-subscriptions' );
+            }
             return __( 'Subscribe', 'process-subscriptions' );
         }
     }

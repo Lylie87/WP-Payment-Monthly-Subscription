@@ -118,27 +118,43 @@ class Process_Subscription_Manager {
                 continue;
             }
 
-            // Calculate next payment date
-            $next_payment = date( 'Y-m-d H:i:s', strtotime( "+{$interval} {$period}" ) );
+            // Check for trial period
+            $trial_days = get_post_meta( $product_id, '_subscription_trial_days', true );
+            $trial_end  = null;
+            $status     = 'active';
+
+            if ( $trial_days && intval( $trial_days ) > 0 ) {
+                $trial_end    = date( 'Y-m-d H:i:s', strtotime( '+' . intval( $trial_days ) . ' days' ) );
+                $next_payment = $trial_end; // First payment after trial ends
+                $status       = 'trialing';
+            } else {
+                $next_payment = date( 'Y-m-d H:i:s', strtotime( "+{$interval} {$period}" ) );
+            }
 
             // Insert subscription
-            $wpdb->insert(
-                $this->table,
-                array(
-                    'order_id'         => $order->get_id(),
-                    'order_item_id'    => $item_id,
-                    'user_id'          => $order->get_user_id(),
-                    'product_id'       => $product_id,
-                    'status'           => 'active',
-                    'billing_period'   => $period,
-                    'billing_interval' => $interval,
-                    'amount'           => $price,
-                    'currency'         => $order->get_currency(),
-                    'next_payment'     => $next_payment,
-                    'last_payment'     => current_time( 'mysql' ),
-                ),
-                array( '%d', '%d', '%d', '%d', '%s', '%s', '%d', '%f', '%s', '%s', '%s' )
+            $insert_data = array(
+                'order_id'         => $order->get_id(),
+                'order_item_id'    => $item_id,
+                'user_id'          => $order->get_user_id(),
+                'product_id'       => $product_id,
+                'status'           => $status,
+                'billing_period'   => $period,
+                'billing_interval' => $interval,
+                'amount'           => $price,
+                'currency'         => $order->get_currency(),
+                'next_payment'     => $next_payment,
             );
+            $insert_format = array( '%d', '%d', '%d', '%d', '%s', '%s', '%d', '%f', '%s', '%s' );
+
+            if ( $trial_end ) {
+                $insert_data['trial_end'] = $trial_end;
+                $insert_format[] = '%s';
+            } else {
+                $insert_data['last_payment'] = current_time( 'mysql' );
+                $insert_format[] = '%s';
+            }
+
+            $wpdb->insert( $this->table, $insert_data, $insert_format );
 
             $subscription_id = $wpdb->insert_id;
 
@@ -293,6 +309,31 @@ class Process_Subscription_Manager {
             return false;
         }
 
+        $is_trialing = ( $subscription['status'] === 'trialing' );
+
+        // For trials, always cancel Stripe immediately (no billing period to honour)
+        // but let the trial run its natural course locally
+        if ( $is_trialing && ! $immediately ) {
+            if ( ! empty( $subscription['stripe_subscription_id'] ) ) {
+                $stripe = Process_Stripe_Handler::get_instance();
+                $stripe->cancel_subscription( $subscription['stripe_subscription_id'], true );
+            }
+
+            $update_data = array(
+                'status'       => 'pending-cancel',
+                'cancelled_at' => current_time( 'mysql' ),
+                'expires_at'   => $subscription['trial_end'] ?: $subscription['next_payment'],
+            );
+
+            $result = $this->update( $id, $update_data );
+
+            if ( $result ) {
+                do_action( 'process_subscription_cancelled', $id, false );
+            }
+
+            return $result;
+        }
+
         // Cancel in Stripe if applicable
         if ( ! empty( $subscription['stripe_subscription_id'] ) ) {
             $stripe = Process_Stripe_Handler::get_instance();
@@ -374,6 +415,24 @@ class Process_Subscription_Manager {
             do_action( 'process_subscription_expired', $subscription['id'] );
         }
 
+        // Find expired trials (safety net - Stripe should handle this, but just in case)
+        $expired_trials = $wpdb->get_results(
+            "SELECT * FROM {$this->table}
+             WHERE status = 'trialing'
+             AND trial_end IS NOT NULL
+             AND trial_end < NOW()
+             AND stripe_subscription_id IS NULL",
+            ARRAY_A
+        );
+
+        foreach ( $expired_trials as $subscription ) {
+            $this->update( $subscription['id'], array(
+                'status' => 'expired',
+            ) );
+
+            do_action( 'process_subscription_trial_expired', $subscription['id'] );
+        }
+
         // Find pending-cancel subscriptions past their end date
         $pending_cancel = $wpdb->get_results(
             "SELECT * FROM {$this->table}
@@ -432,7 +491,17 @@ class Process_Subscription_Manager {
             $product = wc_get_product( $sub['product_id'] );
             echo '<tr>';
             echo '<td>' . ( $product ? esc_html( $product->get_name() ) : 'Product #' . $sub['product_id'] ) . '</td>';
-            echo '<td><span class="subscription-status status-' . esc_attr( $sub['status'] ) . '">' . esc_html( ucfirst( $sub['status'] ) ) . '</span></td>';
+            $status_label = ucfirst( $sub['status'] );
+            if ( $sub['status'] === 'trialing' ) {
+                $status_label = 'Free Trial';
+            }
+            echo '<td><span class="subscription-status status-' . esc_attr( $sub['status'] ) . '">' . esc_html( $status_label ) . '</span>';
+            if ( $sub['status'] === 'trialing' && ! empty( $sub['trial_end'] ) ) {
+                $trial_end_date = date_i18n( get_option( 'date_format' ), strtotime( $sub['trial_end'] ) );
+                $days_remaining = max( 0, ceil( ( strtotime( $sub['trial_end'] ) - time() ) / 86400 ) );
+                echo '<br><small>Ends ' . esc_html( $trial_end_date ) . ' (' . $days_remaining . ' days left)</small>';
+            }
+            echo '</td>';
             echo '<td>' . ( $sub['next_payment'] ? esc_html( date_i18n( get_option( 'date_format' ), strtotime( $sub['next_payment'] ) ) ) : '—' ) . '</td>';
             echo '</tr>';
         }
@@ -472,12 +541,22 @@ class Process_Subscription_Manager {
             echo '<tr>';
             echo '<td>#' . esc_html( $sub['id'] ) . '</td>';
             echo '<td>' . ( $product ? esc_html( $product->get_name() ) : 'Product #' . $sub['product_id'] ) . '</td>';
-            echo '<td><span class="subscription-status status-' . esc_attr( $sub['status'] ) . '">' . esc_html( ucfirst( str_replace( '-', ' ', $sub['status'] ) ) ) . '</span></td>';
+            $status_display = ucfirst( str_replace( '-', ' ', $sub['status'] ) );
+            if ( $sub['status'] === 'trialing' ) {
+                $status_display = 'Free Trial';
+            }
+            echo '<td><span class="subscription-status status-' . esc_attr( $sub['status'] ) . '">' . esc_html( $status_display ) . '</span>';
+            if ( $sub['status'] === 'trialing' && ! empty( $sub['trial_end'] ) ) {
+                $trial_end_date = date_i18n( get_option( 'date_format' ), strtotime( $sub['trial_end'] ) );
+                $days_remaining = max( 0, ceil( ( strtotime( $sub['trial_end'] ) - time() ) / 86400 ) );
+                echo '<br><small>Ends ' . esc_html( $trial_end_date ) . ' (' . $days_remaining . ' days left)</small>';
+            }
+            echo '</td>';
             echo '<td>' . wc_price( $sub['amount'] ) . ' / ' . esc_html( $period_label ) . '</td>';
             echo '<td>' . ( $sub['next_payment'] ? esc_html( date_i18n( get_option( 'date_format' ), strtotime( $sub['next_payment'] ) ) ) : '—' ) . '</td>';
             echo '<td>';
 
-            if ( in_array( $sub['status'], array( 'active', 'pending' ), true ) ) {
+            if ( in_array( $sub['status'], array( 'active', 'pending', 'trialing' ), true ) ) {
                 echo '<button class="button cancel-subscription" data-id="' . esc_attr( $sub['id'] ) . '" data-nonce="' . wp_create_nonce( 'cancel_subscription_' . $sub['id'] ) . '">' . esc_html__( 'Cancel', 'process-subscriptions' ) . '</button>';
             }
 

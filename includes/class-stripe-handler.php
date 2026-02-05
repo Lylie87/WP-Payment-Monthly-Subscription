@@ -325,14 +325,23 @@ class Process_Stripe_Handler {
             $sub_data['trial_period_days'] = intval( $trial_days );
         }
 
-        // If there's a trial or the first payment is already taken, start billing from next period
-        $sub_data['billing_cycle_anchor'] = strtotime( '+' . $subscription_data['billing_interval'] . ' ' . $subscription_data['billing_period'] );
+        // If there's a trial, let Stripe handle billing start automatically
+        // Otherwise, anchor billing to next period (first payment already taken)
+        if ( empty( $sub_data['trial_period_days'] ) ) {
+            $sub_data['billing_cycle_anchor'] = strtotime( '+' . $subscription_data['billing_interval'] . ' ' . $subscription_data['billing_period'] );
+        }
 
         // Payment behavior depends on whether we have a valid payment method
         if ( $valid_payment_method ) {
             $sub_data['payment_behavior'] = 'default_incomplete';
+        } elseif ( ! empty( $sub_data['trial_period_days'] ) ) {
+            // Trial without payment method: create sub, Stripe will collect payment at trial end
+            $sub_data['payment_behavior'] = 'default_incomplete';
+            $sub_data['payment_settings'] = array(
+                'save_default_payment_method' => 'on_subscription',
+            );
         } else {
-            // No valid payment method - create subscription anyway, Stripe will email customer for payment
+            // No valid payment method and no trial - send invoice
             $sub_data['payment_behavior'] = 'allow_incomplete';
             $sub_data['collection_method'] = 'send_invoice';
             $sub_data['days_until_due'] = 7; // Give customer 7 days to pay invoice

@@ -43,8 +43,12 @@ class Process_License_Sync {
         add_action( 'process_subscription_cancelled', array( $this, 'handle_cancellation' ), 10, 2 );
         add_action( 'process_subscription_ended', array( $this, 'suspend_license' ) );
         add_action( 'process_subscription_expired', array( $this, 'suspend_license' ) );
+        add_action( 'process_subscription_trial_expired', array( $this, 'suspend_license' ) );
         add_action( 'process_subscription_payment_failed', array( $this, 'handle_payment_failed' ), 10, 2 );
         add_action( 'process_subscription_status_changed', array( $this, 'handle_status_change' ), 10, 2 );
+
+        // Trial-to-paid conversion
+        add_action( 'process_subscription_trial_converted', array( $this, 'activate_paid_addon' ), 10, 2 );
 
         // Note: Refund/cancel hooks removed - license revocation is now handled manually
         // via the Order License Admin metabox with admin confirmation.
@@ -92,20 +96,33 @@ class Process_License_Sync {
             return;
         }
 
+        // Check for trial
+        $trial_days = intval( $item->get_meta( '_subscription_trial_days' ) );
+        $is_trial   = ( $trial_days > 0 );
+
+        // Build API payload
+        $payload = array(
+            'email'           => $order->get_billing_email(),
+            'customer_name'   => $order->get_formatted_billing_full_name(),
+            'plugin_slug'     => $plugin_slug,
+            'license_type'    => $license_type,
+            'order_id'        => $order->get_id(),
+            'subscription_id' => $subscription_id,
+            'staff_limit'     => $this->get_staff_limit( $license_type ),
+        );
+
+        // For trials, set license expiry to trial end date
+        if ( $is_trial ) {
+            $payload['expires_at'] = date( 'Y-m-d H:i:s', strtotime( '+' . $trial_days . ' days' ) );
+        }
+
         $response = wp_remote_post( $this->get_api_url() . 'create-license.php', array(
             'timeout' => 30,
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'X-API-Key'    => $api_key,
             ),
-            'body'    => wp_json_encode( array(
-                'email'           => $order->get_billing_email(),
-                'customer_name'   => $order->get_formatted_billing_full_name(),
-                'plugin_slug'     => $plugin_slug,
-                'license_type'    => $license_type,
-                'order_id'        => $order->get_id(),
-                'subscription_id' => $subscription_id,
-            ) ),
+            'body'    => wp_json_encode( $payload ),
         ) );
 
         if ( is_wp_error( $response ) ) {
@@ -133,13 +150,19 @@ class Process_License_Sync {
             $order->save();
 
             $order->add_order_note( sprintf(
-                'License created for subscription #%d: %s',
+                'License created for subscription #%d: %s%s',
                 $subscription_id,
-                $body['license']['serial_key']
+                $body['license']['serial_key'],
+                $is_trial ? ' (trial - ' . $trial_days . ' days)' : ''
             ) );
 
-            // Send license email
-            $this->send_license_email( $order, $body, $item->get_name() );
+            // Set up trial addon if this is a trial for Route Optimiser
+            if ( $is_trial ) {
+                $this->setup_trial_addon( $body['license']['serial_key'], $license_type, $subscription_id, $trial_days );
+            }
+
+            // Send license email (with trial awareness)
+            $this->send_license_email( $order, $body, $item->get_name(), $is_trial, $trial_days );
         } else {
             $error = $body['error'] ?? 'Unknown error';
             $order->add_order_note( 'License creation failed: ' . $error );
@@ -184,6 +207,165 @@ class Process_License_Sync {
             default:
                 return 365; // Default to 1 year
         }
+    }
+
+    /**
+     * Get staff limit for a license type
+     *
+     * @param string $license_type License type slug.
+     * @return int Staff limit (0 = not applicable).
+     */
+    private function get_staff_limit( $license_type ) {
+        $limits = array(
+            'ro-solo'       => 1,
+            'ro-small-team' => 3,
+            'ro-team'       => 10,
+            'ro-business'   => 20,
+        );
+
+        return $limits[ $license_type ] ?? 0;
+    }
+
+    /**
+     * Get addon tier slug from license type
+     *
+     * @param string $license_type License type slug.
+     * @return string Addon tier slug.
+     */
+    private function get_addon_tier( $license_type ) {
+        $tiers = array(
+            'ro-solo'       => 'solo',
+            'ro-small-team' => 'small_team',
+            'ro-team'       => 'team',
+            'ro-business'   => 'business',
+        );
+
+        return $tiers[ $license_type ] ?? 'solo';
+    }
+
+    /**
+     * Set up trial addon for route optimisation
+     *
+     * @param string $license_key License key.
+     * @param string $license_type License type slug.
+     * @param int    $subscription_id WooCommerce subscription ID.
+     * @param int    $trial_days Number of trial days.
+     */
+    private function setup_trial_addon( $license_key, $license_type, $subscription_id, $trial_days ) {
+        $api_key = $this->get_api_key();
+        if ( empty( $api_key ) ) {
+            return;
+        }
+
+        // Only set up route optimisation addon for RO products
+        if ( strpos( $license_type, 'ro-' ) !== 0 ) {
+            return;
+        }
+
+        $response = wp_remote_post( $this->get_api_url() . 'addon-subscription.php', array(
+            'timeout' => 30,
+            'headers' => array(
+                'Content-Type' => 'application/json',
+                'X-API-Key'    => $api_key,
+            ),
+            'body'    => wp_json_encode( array(
+                'action'              => 'setup_trial',
+                'license_key'         => $license_key,
+                'addon_type'          => 'route_optimization',
+                'woo_subscription_id' => $subscription_id,
+                'trial_days'          => $trial_days,
+            ) ),
+        ) );
+
+        if ( ! is_wp_error( $response ) ) {
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Process Subscriptions: Trial addon setup result: ' . wp_json_encode( $body ) );
+            }
+        }
+    }
+
+    /**
+     * Activate paid addon after trial converts to paid subscription
+     *
+     * Hooked on: process_subscription_trial_converted
+     *
+     * @param int   $subscription_id Subscription ID.
+     * @param array $invoice Invoice data from Stripe.
+     */
+    public function activate_paid_addon( $subscription_id, $invoice ) {
+        $subscription = Process_Subscription_Manager::get_instance()->get( $subscription_id );
+        if ( ! $subscription ) {
+            return;
+        }
+
+        $license_key = $subscription['license_key'] ?? '';
+
+        if ( empty( $license_key ) ) {
+            $order = wc_get_order( $subscription['order_id'] );
+            if ( $order ) {
+                $license_key = $order->get_meta( '_subscription_license_key_' . $subscription_id );
+            }
+        }
+
+        if ( empty( $license_key ) ) {
+            return;
+        }
+
+        // Get the license type from the order item to determine the correct tier
+        $order = wc_get_order( $subscription['order_id'] );
+        if ( ! $order ) {
+            return;
+        }
+
+        $license_type = '';
+        foreach ( $order->get_items() as $item ) {
+            if ( $item->get_meta( '_is_subscription' ) === 'yes' ) {
+                $license_type = $item->get_meta( '_subscription_license_type' );
+                break;
+            }
+        }
+
+        // Only handle RO products
+        if ( strpos( $license_type, 'ro-' ) !== 0 ) {
+            return;
+        }
+
+        $tier    = $this->get_addon_tier( $license_type );
+        $api_key = $this->get_api_key();
+        if ( empty( $api_key ) ) {
+            return;
+        }
+
+        // Activate the paid addon with the correct tier
+        $response = wp_remote_post( $this->get_api_url() . 'addon-subscription.php', array(
+            'timeout' => 30,
+            'headers' => array(
+                'Content-Type' => 'application/json',
+                'X-API-Key'    => $api_key,
+            ),
+            'body'    => wp_json_encode( array(
+                'action'              => 'activate',
+                'license_key'         => $license_key,
+                'addon_type'          => 'route_optimization',
+                'tier'                => $tier,
+                'woo_subscription_id' => $subscription_id,
+            ) ),
+        ) );
+
+        if ( ! is_wp_error( $response ) ) {
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            if ( $order && ! empty( $body['success'] ) ) {
+                $order->add_order_note( sprintf(
+                    'Trial converted to paid: %s tier activated for license %s',
+                    $tier,
+                    $license_key
+                ) );
+            }
+        }
+
+        // Extend the license expiry by 30 days (first paid month)
+        $this->extend_license_expiry( $subscription, 30 );
     }
 
     /**
@@ -353,13 +535,21 @@ class Process_License_Sync {
      * @param WC_Order $order Order object.
      * @param array    $license_data License data from API.
      * @param string   $product_name Product name.
+     * @param bool     $is_trial Whether this is a trial license.
+     * @param int      $trial_days Number of trial days.
      */
-    private function send_license_email( $order, $license_data, $product_name ) {
+    private function send_license_email( $order, $license_data, $product_name, $is_trial = false, $trial_days = 0 ) {
         $to = $order->get_billing_email();
-        $subject = sprintf( __( 'Your %s License Key', 'process-subscriptions' ), $product_name );
 
-        // Calculate renewal date (1 year from now for annual subscriptions)
+        if ( $is_trial ) {
+            $subject = sprintf( __( 'Your Free Trial License Key for %s', 'process-subscriptions' ), $product_name );
+        } else {
+            $subject = sprintf( __( 'Your %s License Key', 'process-subscriptions' ), $product_name );
+        }
+
+        // Calculate renewal/charge date
         $renewal_date = date_i18n( 'j F Y', strtotime( '+1 year' ) );
+        $subscription_amount = '';
 
         // Get subscription to check billing period
         global $wpdb;
@@ -372,24 +562,31 @@ class Process_License_Sync {
         if ( $subscription ) {
             $interval = intval( $subscription['billing_interval'] ?? 1 );
             $period = $subscription['billing_period'] ?? 'year';
+            $subscription_amount = wc_price( $subscription['amount'] );
 
-            switch ( $period ) {
-                case 'day':
-                    $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} days" ) );
-                    break;
-                case 'week':
-                    $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} weeks" ) );
-                    break;
-                case 'month':
-                    $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} months" ) );
-                    break;
-                case 'year':
-                    $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} years" ) );
-                    break;
+            if ( $is_trial ) {
+                // For trials, the "renewal" date is when the first charge happens
+                $renewal_date = date_i18n( 'j F Y', strtotime( "+{$trial_days} days" ) );
+            } else {
+                switch ( $period ) {
+                    case 'day':
+                        $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} days" ) );
+                        break;
+                    case 'week':
+                        $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} weeks" ) );
+                        break;
+                    case 'month':
+                        $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} months" ) );
+                        break;
+                    case 'year':
+                        $renewal_date = date_i18n( 'j F Y', strtotime( "+{$interval} years" ) );
+                        break;
+                }
             }
         }
 
         $account_url = wc_get_account_endpoint_url( 'subscriptions' );
+        $trial_end_date = $is_trial ? date_i18n( 'j F Y', strtotime( "+{$trial_days} days" ) ) : '';
 
         ob_start();
         ?>
@@ -414,19 +611,40 @@ class Process_License_Sync {
                     <!-- Main Content -->
                     <tr>
                         <td style="padding: 40px 30px;">
-                            <h1 style="color: #1a1a2e; margin: 0 0 25px; font-size: 28px; font-weight: 600;">Your License Key is Ready!</h1>
+                            <?php if ( $is_trial ) : ?>
+                                <h1 style="color: #1a1a2e; margin: 0 0 25px; font-size: 28px; font-weight: 600;">Your Trial License Key is Ready!</h1>
 
-                            <p style="font-size: 16px; color: #333; margin: 0 0 15px;">Hi <?php echo esc_html( $order->get_billing_first_name() ); ?>,</p>
+                                <p style="font-size: 16px; color: #333; margin: 0 0 15px;">Hi <?php echo esc_html( $order->get_billing_first_name() ); ?>,</p>
 
-                            <p style="font-size: 16px; color: #333; line-height: 1.6; margin: 0 0 30px;">Thank you for subscribing to <strong><?php echo esc_html( $product_name ); ?></strong>! Your license key has been generated and is ready to use.</p>
+                                <p style="font-size: 16px; color: #333; line-height: 1.6; margin: 0 0 30px;">Welcome to your free trial of <strong><?php echo esc_html( $product_name ); ?></strong>! Your trial license key has been generated and is ready to use.</p>
+                            <?php else : ?>
+                                <h1 style="color: #1a1a2e; margin: 0 0 25px; font-size: 28px; font-weight: 600;">Your License Key is Ready!</h1>
+
+                                <p style="font-size: 16px; color: #333; margin: 0 0 15px;">Hi <?php echo esc_html( $order->get_billing_first_name() ); ?>,</p>
+
+                                <p style="font-size: 16px; color: #333; line-height: 1.6; margin: 0 0 30px;">Thank you for subscribing to <strong><?php echo esc_html( $product_name ); ?></strong>! Your license key has been generated and is ready to use.</p>
+                            <?php endif; ?>
 
                             <!-- License Key Box -->
                             <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 30px; border-radius: 8px; margin: 0 0 30px;">
-                                <p style="margin: 0 0 15px; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #888; text-align: center;">Your License Key</p>
+                                <p style="margin: 0 0 15px; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; color: #888; text-align: center;"><?php echo $is_trial ? 'Your Trial License Key' : 'Your License Key'; ?></p>
                                 <p style="font-family: 'Courier New', monospace; font-size: 22px; color: #00d4aa; text-align: center; margin: 0; letter-spacing: 2px; word-break: break-all;">
                                     <?php echo esc_html( $license_data['license']['serial_key'] ); ?>
                                 </p>
                             </div>
+
+                            <?php if ( $is_trial ) : ?>
+                            <!-- Trial Info Box -->
+                            <div style="background: #fff3cd; padding: 20px 25px; border-radius: 6px; border-left: 4px solid #ffc107; margin: 0 0 30px;">
+                                <p style="margin: 0 0 12px; font-weight: 600; color: #856404; font-size: 16px;">Your Free Trial Includes:</p>
+                                <ul style="margin: 0 0 12px; padding-left: 20px; color: #856404; font-size: 14px; line-height: 1.8;">
+                                    <li><strong>5 route optimisations</strong> to test the full experience</li>
+                                    <li><strong><?php echo esc_html( $trial_days ); ?> days</strong> to explore all features</li>
+                                    <li>Cancel anytime &mdash; your card won't be charged during the trial</li>
+                                </ul>
+                                <p style="margin: 0; font-size: 14px; color: #856404;">Your trial ends on <strong><?php echo esc_html( $trial_end_date ); ?></strong>. After that, your subscription will begin at <?php echo wp_kses_post( $subscription_amount ); ?>/month.</p>
+                            </div>
+                            <?php endif; ?>
 
                             <!-- Download Button -->
                             <?php if ( ! empty( $license_data['download_url'] ) ) : ?>
@@ -437,9 +655,16 @@ class Process_License_Sync {
 
                             <!-- Subscription Details -->
                             <div style="background: #f8f9fa; padding: 20px 25px; border-radius: 6px; border-left: 4px solid #00d4aa;">
-                                <p style="margin: 0 0 8px; font-weight: 600; color: #1a1a2e;">Subscription Details:</p>
-                                <p style="margin: 0 0 5px; font-size: 14px; color: #555;">Your license will automatically renew on <strong><?php echo esc_html( $renewal_date ); ?></strong>.</p>
-                                <p style="margin: 0; font-size: 14px; color: #555;">You can manage or cancel your subscription anytime from your <a href="<?php echo esc_url( $account_url ); ?>" style="color: #00d4aa; text-decoration: none;">account dashboard</a>.</p>
+                                <?php if ( $is_trial ) : ?>
+                                    <p style="margin: 0 0 8px; font-weight: 600; color: #1a1a2e;">What happens next?</p>
+                                    <p style="margin: 0 0 5px; font-size: 14px; color: #555;">Your first payment of <?php echo wp_kses_post( $subscription_amount ); ?> will be taken on <strong><?php echo esc_html( $renewal_date ); ?></strong>.</p>
+                                    <p style="margin: 0 0 5px; font-size: 14px; color: #555;">Your license key stays the same &mdash; no action needed when your trial ends.</p>
+                                    <p style="margin: 0; font-size: 14px; color: #555;">You can cancel anytime from your <a href="<?php echo esc_url( $account_url ); ?>" style="color: #00d4aa; text-decoration: none;">account dashboard</a>.</p>
+                                <?php else : ?>
+                                    <p style="margin: 0 0 8px; font-weight: 600; color: #1a1a2e;">Subscription Details:</p>
+                                    <p style="margin: 0 0 5px; font-size: 14px; color: #555;">Your license will automatically renew on <strong><?php echo esc_html( $renewal_date ); ?></strong>.</p>
+                                    <p style="margin: 0; font-size: 14px; color: #555;">You can manage or cancel your subscription anytime from your <a href="<?php echo esc_url( $account_url ); ?>" style="color: #00d4aa; text-decoration: none;">account dashboard</a>.</p>
+                                <?php endif; ?>
                             </div>
                         </td>
                     </tr>

@@ -173,11 +173,19 @@ class Process_Webhook_Handler {
             return false;
         }
 
+        // Check if this is a trial-to-paid conversion (first real payment)
+        $was_trialing = ( $subscription['status'] === 'trialing' || ! empty( $subscription['trial_end'] ) );
+
         // Renew the subscription
         $manager->renew( $subscription['id'] );
 
         // Trigger license renewal
         do_action( 'process_subscription_payment_received', $subscription['id'], $invoice );
+
+        // If converting from trial, fire the conversion action
+        if ( $was_trialing ) {
+            do_action( 'process_subscription_trial_converted', $subscription['id'], $invoice );
+        }
 
         // Send receipt email
         $this->send_payment_receipt( $subscription, $invoice );
@@ -239,7 +247,7 @@ class Process_Webhook_Handler {
             'canceled'          => 'cancelled',
             'incomplete'        => 'pending',
             'incomplete_expired'=> 'expired',
-            'trialing'          => 'active',
+            'trialing'          => 'trialing',
         );
 
         if ( isset( $status_map[ $stripe_sub['status'] ] ) ) {
