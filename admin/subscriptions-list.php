@@ -299,26 +299,24 @@ $counts = array(
                                 </a>
                             <?php endif; ?>
 
-                            <?php if ( ! empty( $sub['license_key'] ) ) : ?>
-                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=setup_trial_addon&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
-                                   class="button button-small"
-                                   onclick="return confirm('Trigger trial addon setup for #<?php echo esc_attr( $sub['id'] ); ?>?');"
-                                   title="Manually trigger trial addon creation">
-                                    Setup Addon
-                                </a>
-                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=convert_trial&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
-                                   class="button button-small"
-                                   onclick="return confirm('Trigger trial conversion for #<?php echo esc_attr( $sub['id'] ); ?>? This will activate the paid addon and extend license.');"
-                                   title="Manually trigger trial-to-paid conversion">
-                                    Convert
-                                </a>
-                                <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=extend_license&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
-                                   class="button button-small"
-                                   onclick="return confirm('Extend license for #<?php echo esc_attr( $sub['id'] ); ?> by 30 days?');"
-                                   title="Extend license expiry by 30 days">
-                                    +30 Days
-                                </a>
-                            <?php endif; ?>
+                            <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=setup_trial_addon&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                               class="button button-small"
+                               onclick="return confirm('Trigger trial addon setup for #<?php echo esc_attr( $sub['id'] ); ?>?');"
+                               title="Manually trigger trial addon creation">
+                                Setup Addon
+                            </a>
+                            <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=convert_trial&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                               class="button button-small"
+                               onclick="return confirm('Trigger trial conversion for #<?php echo esc_attr( $sub['id'] ); ?>? This will activate the paid addon and extend license.');"
+                               title="Manually trigger trial-to-paid conversion">
+                                Convert
+                            </a>
+                            <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=extend_license&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
+                               class="button button-small"
+                               onclick="return confirm('Extend license for #<?php echo esc_attr( $sub['id'] ); ?> by 30 days?');"
+                               title="Extend license expiry by 30 days">
+                                +30 Days
+                            </a>
 
                             <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=process-subscriptions&action=delete&sub_id=' . $sub['id'] ), 'process_sub_action_' . $sub['id'] ) ); ?>"
                                class="button button-small button-link-delete"

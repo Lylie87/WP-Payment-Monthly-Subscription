@@ -3,7 +3,7 @@
  * Plugin Name: Pro-cess Subscriptions
  * Plugin URI: https://pro-cess.co.uk
  * Description: Lightweight subscription handling for WooCommerce with Stripe integration and license system sync.
- * Version: 1.1.9
+ * Version: 1.1.10
  * Author: Pro-cess
  * Author URI: https://pro-cess.co.uk
  * Text Domain: process-subscriptions
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Plugin constants
-define( 'PROCESS_SUBS_VERSION', '1.1.9' );
+define( 'PROCESS_SUBS_VERSION', '1.1.10' );
 define( 'PROCESS_SUBS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'PROCESS_SUBS_URL', plugin_dir_url( __FILE__ ) );
 
@@ -83,6 +83,12 @@ final class Process_Subscriptions {
 
         // HPOS compatibility
         add_action( 'before_woocommerce_init', array( $this, 'declare_hpos_compatibility' ) );
+
+        // Check for DB updates on version change
+        $db_version = get_option( 'process_subs_db_version', '0' );
+        if ( version_compare( $db_version, PROCESS_SUBS_VERSION, '<' ) ) {
+            $this->create_tables();
+        }
     }
 
     /**

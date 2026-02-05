@@ -217,10 +217,10 @@ class Process_License_Sync {
      */
     private function get_staff_limit( $license_type ) {
         $limits = array(
-            'ro-solo'       => 1,
-            'ro-small-team' => 3,
-            'ro-team'       => 10,
-            'ro-business'   => 20,
+            'solo'       => 1,
+            'small_team' => 3,
+            'team'       => 10,
+            'business'   => 20,
         );
 
         return $limits[ $license_type ] ?? 0;
@@ -233,14 +233,21 @@ class Process_License_Sync {
      * @return string Addon tier slug.
      */
     private function get_addon_tier( $license_type ) {
-        $tiers = array(
-            'ro-solo'       => 'solo',
-            'ro-small-team' => 'small_team',
-            'ro-team'       => 'team',
-            'ro-business'   => 'business',
-        );
+        // License type slugs map directly to addon tiers
+        $valid_tiers = array( 'solo', 'small_team', 'team', 'business' );
 
-        return $tiers[ $license_type ] ?? 'solo';
+        return in_array( $license_type, $valid_tiers, true ) ? $license_type : 'solo';
+    }
+
+    /**
+     * Check if license type is a route optimisation product
+     *
+     * @param string $license_type License type slug.
+     * @return bool
+     */
+    private function is_ro_license_type( $license_type ) {
+        $ro_types = array( 'solo', 'small_team', 'team', 'business' );
+        return in_array( $license_type, $ro_types, true );
     }
 
     /**
@@ -259,7 +266,7 @@ class Process_License_Sync {
         }
 
         // Only set up route optimisation addon for RO products
-        if ( strpos( $license_type, 'ro-' ) !== 0 ) {
+        if ( ! $this->is_ro_license_type( $license_type ) ) {
             $this->add_sub_order_note( $subscription_id, sprintf( 'Trial addon setup skipped: license type "%s" is not a route optimisation product.', $license_type ) );
             return;
         }
@@ -366,7 +373,7 @@ class Process_License_Sync {
         }
 
         // Only handle RO products
-        if ( strpos( $license_type, 'ro-' ) !== 0 ) {
+        if ( ! $this->is_ro_license_type( $license_type ) ) {
             $order->add_order_note( sprintf( 'Trial conversion: skipping addon activation (license type "%s" is not RO).', $license_type ) );
             return;
         }
